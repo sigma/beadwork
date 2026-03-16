@@ -7,10 +7,21 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/jallum/beadwork/internal/issue"
+)
+
+// overlayKind identifies the active overlay prompt.
+type overlayKind int
+
+const (
+	overlayNone overlayKind = iota
+	overlayConfirmClose
+	overlayConfirmReopen
+	overlayCommentInput
 )
 
 const refreshInterval = 3 * time.Second
@@ -97,12 +108,23 @@ type model struct {
 	height    int
 	showHelp  bool
 	statusIdx int // index into statusFilters
+
+	// Overlay state
+	overlay    overlayKind
+	overlayID  string          // issue ID the overlay applies to
+	textInput  textinput.Model
+	statusMsg  string          // transient status message from last action
 }
 
 func newModel(repos []*RepoSource) model {
+	ti := textinput.New()
+	ti.Placeholder = "Enter comment..."
+	ti.CharLimit = 500
+
 	m := model{
-		repos:    repos,
-		viewport: viewport.New(),
+		repos:     repos,
+		viewport:  viewport.New(),
+		textInput: ti,
 	}
 	m.list = m.buildList()
 	return m
@@ -206,6 +228,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.KeyMsg:
+		// Handle overlay input first
+		if m.overlay != overlayNone {
+			return m.updateOverlay(msg)
+		}
+
 		// Don't intercept keys while filtering (list view only)
 		if m.view == viewList && m.list.FilterState() == list.Filtering {
 			break
@@ -227,6 +254,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("3"))):
 			switchView(&m, viewTree)
+			return m, nil
+
+		// Mutations (work on selected issue in any view)
+		case key.Matches(msg, key.NewBinding(key.WithKeys("S"))):
+			if iss := m.selectedIssue(); iss != nil {
+				result := doStart(m.repos, iss.ID)
+				m.statusMsg = result.String()
+				m.refreshCurrentView()
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("X"))):
+			if iss := m.selectedIssue(); iss != nil {
+				m.overlay = overlayConfirmClose
+				m.overlayID = iss.ID
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("O"))):
+			if iss := m.selectedIssue(); iss != nil {
+				m.overlay = overlayConfirmReopen
+				m.overlayID = iss.ID
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("C"))):
+			if iss := m.selectedIssue(); iss != nil {
+				m.overlay = overlayCommentInput
+				m.overlayID = iss.ID
+				m.textInput.Reset()
+				m.textInput.Focus()
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("Y"))):
+			m.statusMsg = "Syncing..."
+			result := doSync(m.repos)
+			m.statusMsg = result.String()
+			m.refreshCurrentView()
 			return m, nil
 		}
 
@@ -251,6 +313,95 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// selectedIssue returns the currently selected issue across any view.
+func (m model) selectedIssue() *issue.Issue {
+	switch m.view {
+	case viewList:
+		if item, ok := m.list.SelectedItem().(issueItem); ok {
+			return item.issue
+		}
+	case viewKanban:
+		return m.kanban.selectedIssue()
+	case viewTree:
+		return m.tree.selectedIssue()
+	}
+	return nil
+}
+
+// refreshCurrentView rebuilds the active view's data after a mutation.
+func (m *model) refreshCurrentView() {
+	for _, r := range m.repos {
+		r.Store.ClearCache()
+	}
+	switch m.view {
+	case viewList:
+		m.list = m.buildList()
+	case viewKanban:
+		m.kanban = newKanbanData(m.repos)
+	case viewTree:
+		m.tree = newTreeData(m.repos)
+	}
+	// Refresh detail if open
+	if m.detail != nil {
+		for _, r := range m.repos {
+			if iss, err := r.Store.Get(m.detail.ID); err == nil {
+				m.detail = iss
+				m.viewport.SetContent(m.renderDetailContent(iss))
+				break
+			}
+		}
+	}
+}
+
+// updateOverlay handles input when a confirmation or text input overlay is active.
+func (m model) updateOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.overlay {
+	case overlayConfirmClose, overlayConfirmReopen:
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("y"))):
+			if m.overlay == overlayConfirmClose {
+				result := doClose(m.repos, m.overlayID)
+				m.statusMsg = result.String()
+			} else {
+				result := doReopen(m.repos, m.overlayID)
+				m.statusMsg = result.String()
+			}
+			m.overlay = overlayNone
+			m.refreshCurrentView()
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("n", "esc"))):
+			m.overlay = overlayNone
+			m.statusMsg = ""
+			return m, nil
+		}
+		return m, nil
+
+	case overlayCommentInput:
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			text := m.textInput.Value()
+			if text != "" {
+				result := doComment(m.repos, m.overlayID, text)
+				m.statusMsg = result.String()
+				m.refreshCurrentView()
+			}
+			m.overlay = overlayNone
+			m.textInput.Blur()
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			m.overlay = overlayNone
+			m.textInput.Blur()
+			m.statusMsg = ""
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
 }
 
 func switchView(m *model, v viewKind) {
@@ -425,6 +576,20 @@ func (m model) View() tea.View {
 		}
 	}
 
+	// Overlay
+	if m.overlay != overlayNone {
+		overlay := m.renderOverlay()
+		content = lipgloss.JoinVertical(lipgloss.Left, content, overlay)
+	}
+
+	// Status message
+	if m.statusMsg != "" {
+		statusStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#d7af5f")).
+			Padding(0, 1)
+		content = lipgloss.JoinVertical(lipgloss.Left, content, statusStyle.Render(m.statusMsg))
+	}
+
 	// View tab bar
 	tabBar := m.renderTabBar()
 	content = lipgloss.JoinVertical(lipgloss.Left, tabBar, content)
@@ -432,6 +597,24 @@ func (m model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
+}
+
+func (m model) renderOverlay() string {
+	style := lipgloss.NewStyle().
+		Padding(0, 2).
+		Foreground(lipgloss.Color("#ff5f5f"))
+
+	switch m.overlay {
+	case overlayConfirmClose:
+		return style.Render(fmt.Sprintf("Close %s? (y/n)", m.overlayID))
+	case overlayConfirmReopen:
+		return style.Render(fmt.Sprintf("Reopen %s? (y/n)", m.overlayID))
+	case overlayCommentInput:
+		return lipgloss.NewStyle().Padding(0, 2).Render(
+			fmt.Sprintf("Comment on %s: %s", m.overlayID, m.textInput.View()),
+		)
+	}
+	return ""
 }
 
 func (m model) renderTabBar() string {
@@ -523,16 +706,25 @@ func (m model) renderDetailContent(iss *issue.Issue) string {
 func (m model) helpView() string {
 	help := `Keybindings:
 
-  1/2/3        Switch view: List / Kanban / Tree
-  j/k, ↑/↓    Navigate list / scroll detail
-  h/l, ←/→    Navigate kanban columns
-  enter        Open detail panel
-  tab          Switch focus between list and detail (list view)
-  /            Filter issues (fuzzy search, list view)
-  s            Cycle status filter (list view)
-  esc          Unfocus detail / close detail / clear filter
-  q            Quit
-  ?            Toggle this help
+  Navigation
+    1/2/3        Switch view: List / Kanban / Tree
+    j/k, ↑/↓    Navigate list / scroll detail
+    h/l, ←/→    Navigate kanban columns
+    space        Toggle expand/collapse (tree view)
+    enter        Open detail panel
+    tab          Switch focus between list and detail (list view)
+    /            Filter issues (fuzzy search, list view)
+    s            Cycle status filter (list view)
+    esc          Unfocus detail / close detail / clear filter
+
+  Actions
+    S            Start issue (open → in_progress)
+    X            Close issue (with confirmation)
+    O            Reopen issue (with confirmation)
+    C            Add comment (text input)
+    Y            Sync all repos
+
+  q  Quit    ?  Toggle this help
 `
 	style := lipgloss.NewStyle().Padding(2, 4)
 	return style.Render(help)
