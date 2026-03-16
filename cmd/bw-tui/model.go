@@ -38,6 +38,7 @@ const (
 	viewList viewKind = iota
 	viewKanban
 	viewTree
+	viewDeps
 )
 
 // focus tracks which pane has keyboard focus.
@@ -101,6 +102,7 @@ type model struct {
 	list      list.Model
 	kanban    kanbanData
 	tree      treeData
+	deps      depGraphData
 	detail    *issue.Issue
 	viewport  viewport.Model
 	focus     focus
@@ -214,6 +216,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.kanban = newKanbanData(m.repos)
 			case viewTree:
 				m.tree = newTreeData(m.repos)
+			case viewDeps:
+				m.deps = newDepGraphData(m.repos)
 			}
 			if m.detail != nil {
 				for _, r := range m.repos {
@@ -254,6 +258,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("3"))):
 			switchView(&m, viewTree)
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("4"))):
+			switchView(&m, viewDeps)
 			return m, nil
 
 		// Mutations (work on selected issue in any view)
@@ -300,6 +307,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKanban(msg)
 		case viewTree:
 			return m.updateTree(msg)
+		case viewDeps:
+			return m.updateDeps(msg)
 		}
 	}
 
@@ -326,6 +335,8 @@ func (m model) selectedIssue() *issue.Issue {
 		return m.kanban.selectedIssue()
 	case viewTree:
 		return m.tree.selectedIssue()
+	case viewDeps:
+		return m.deps.selectedIssue()
 	}
 	return nil
 }
@@ -342,6 +353,8 @@ func (m *model) refreshCurrentView() {
 		m.kanban = newKanbanData(m.repos)
 	case viewTree:
 		m.tree = newTreeData(m.repos)
+	case viewDeps:
+		m.deps = newDepGraphData(m.repos)
 	}
 	// Refresh detail if open
 	if m.detail != nil {
@@ -416,6 +429,8 @@ func switchView(m *model, v viewKind) {
 		m.kanban = newKanbanData(m.repos)
 	case viewTree:
 		m.tree = newTreeData(m.repos)
+	case viewDeps:
+		m.deps = newDepGraphData(m.repos)
 	}
 }
 
@@ -531,6 +546,30 @@ func (m model) updateTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateDeps(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
+		m.deps.moveDown()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
+		m.deps.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if iss := m.deps.selectedIssue(); iss != nil {
+			if m.detail != nil && m.detail.ID == iss.ID {
+				m.detail = nil
+			} else {
+				m.detail = iss
+				m.viewport.SetContent(m.renderDetailContent(iss))
+				m.viewport.GotoTop()
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		if m.detail != nil {
+			m.detail = nil
+		}
+	}
+	return m, nil
+}
+
 func (m *model) updateLayout() {
 	if m.detail != nil {
 		m.list.SetSize(m.width/2, m.height)
@@ -554,6 +593,8 @@ func (m model) View() tea.View {
 			mainContent = renderKanban(&m.kanban, m.width, m.height)
 		case viewTree:
 			mainContent = renderTree(&m.tree, m.width, m.height-3)
+		case viewDeps:
+			mainContent = renderDepGraph(&m.deps, m.width, m.height-3)
 		}
 
 		if m.detail != nil {
@@ -626,6 +667,7 @@ func (m model) renderTabBar() string {
 		{"1", "List", viewList},
 		{"2", "Kanban", viewKanban},
 		{"3", "Tree", viewTree},
+		{"4", "Deps", viewDeps},
 	}
 
 	var parts []string
@@ -707,7 +749,7 @@ func (m model) helpView() string {
 	help := `Keybindings:
 
   Navigation
-    1/2/3        Switch view: List / Kanban / Tree
+    1/2/3/4      Switch view: List / Kanban / Tree / Deps
     j/k, ↑/↓    Navigate list / scroll detail
     h/l, ←/→    Navigate kanban columns
     space        Toggle expand/collapse (tree view)
