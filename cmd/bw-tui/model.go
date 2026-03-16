@@ -29,7 +29,7 @@ const refreshInterval = 3 * time.Second
 type tickMsg struct{}
 
 // Status filter options, cycled with 's'.
-var statusFilters = []string{"", "open", "in_progress", "closed", "deferred"}
+var statusFilters = []string{"open", "in_progress", "closed", "deferred", ""}
 
 // viewKind identifies which top-level view is active.
 type viewKind int
@@ -171,6 +171,8 @@ func (m *model) buildList() list.Model {
 	title := "Beadwork"
 	if statusFilter != "" {
 		title += " [" + statusFilter + "]"
+	} else {
+		title += " [all]"
 	}
 	l.Title = title
 	l.SetShowStatusBar(true)
