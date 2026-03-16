@@ -161,8 +161,14 @@ func renderKanban(kd *kanbanData, width, height int) string {
 				Render("  (empty)"))
 		}
 
+		colHeight := height - 4 // account for tab bar and borders
+		if colHeight < 3 {
+			colHeight = 3
+		}
+
 		colStyle := lipgloss.NewStyle().
 			Width(colWidth).
+			Height(colHeight).
 			Padding(1, 1).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderRight(colIdx < len(kanbanColumns)-1)
