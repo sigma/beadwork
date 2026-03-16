@@ -232,6 +232,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.KeyMsg:
+		// Clear transient status on any keypress
+		m.statusMsg = ""
+
 		// Handle overlay input first
 		if m.overlay != overlayNone {
 			return m.updateOverlay(msg)
