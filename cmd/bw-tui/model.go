@@ -11,18 +11,33 @@ import (
 	"github.com/jallum/beadwork/internal/issue"
 )
 
+// Status filter options, cycled with 's'.
+var statusFilters = []string{"", "open", "in_progress", "closed", "deferred"}
+
 // issueItem wraps an issue for the list.Model.
 type issueItem struct {
-	issue    *issue.Issue
-	repoName string // empty when single-repo
+	issue       *issue.Issue
+	repoName    string // empty when single-repo
+	openBlockers int   // count of non-closed blockers
 }
 
 func (i issueItem) Title() string {
-	prefix := ""
+	var b strings.Builder
+
+	blocked := i.openBlockers > 0 && i.issue.Status != "closed"
+	b.WriteString(styledStatusIcon(i.issue.Status, blocked))
+	b.WriteString(" ")
 	if i.repoName != "" {
-		prefix = i.repoName + " "
+		b.WriteString(styledRepoName(i.repoName))
+		b.WriteString(" ")
 	}
-	return fmt.Sprintf("%s %s%s  %s", statusIcon(i.issue.Status, i.issue), prefix+i.issue.ID, priorityBadge(i.issue.Priority), i.issue.Title)
+	b.WriteString(styledID(i.issue.ID))
+	b.WriteString(" ")
+	b.WriteString(styledPriorityBadge(i.issue.Priority))
+	b.WriteString("  ")
+	b.WriteString(i.issue.Title)
+
+	return b.String()
 }
 
 func (i issueItem) Description() string {
@@ -33,12 +48,8 @@ func (i issueItem) Description() string {
 	if i.issue.Assignee != "" {
 		parts = append(parts, "→ "+i.issue.Assignee)
 	}
-	if len(i.issue.BlockedBy) > 0 {
-		open := 0
-		for range i.issue.BlockedBy {
-			open++
-		}
-		parts = append(parts, fmt.Sprintf("blocked by %d", open))
+	if i.openBlockers > 0 {
+		parts = append(parts, fmt.Sprintf("blocked by %d", i.openBlockers))
 	}
 	if len(i.issue.Labels) > 0 {
 		parts = append(parts, strings.Join(i.issue.Labels, ", "))
@@ -51,20 +62,32 @@ func (i issueItem) FilterValue() string {
 }
 
 type model struct {
-	repos    []*RepoSource
-	list     list.Model
-	detail   *issue.Issue
-	width    int
-	height   int
-	showHelp bool
+	repos       []*RepoSource
+	list        list.Model
+	detail      *issue.Issue
+	width       int
+	height      int
+	showHelp    bool
+	statusIdx   int // index into statusFilters
 }
 
 func newModel(repos []*RepoSource) model {
-	multiRepo := len(repos) > 1
+	m := model{repos: repos}
+	m.list = m.buildList()
+	return m
+}
+
+func (m *model) buildList() list.Model {
+	multiRepo := len(m.repos) > 1
+	statusFilter := statusFilters[m.statusIdx]
 
 	var items []list.Item
-	for _, r := range repos {
-		issues, err := r.Store.List(issue.Filter{})
+	for _, r := range m.repos {
+		filter := issue.Filter{}
+		if statusFilter != "" {
+			filter.Status = statusFilter
+		}
+		issues, err := r.Store.List(filter)
 		if err != nil {
 			continue
 		}
@@ -73,20 +96,32 @@ func newModel(repos []*RepoSource) model {
 			if multiRepo {
 				name = r.Name
 			}
-			items = append(items, issueItem{issue: iss, repoName: name})
+			openBlockers := 0
+			for _, bid := range iss.BlockedBy {
+				if !r.Store.IsClosed(bid) {
+					openBlockers++
+				}
+			}
+			items = append(items, issueItem{
+				issue:        iss,
+				repoName:     name,
+				openBlockers: openBlockers,
+			})
 		}
 	}
 
 	delegate := list.NewDefaultDelegate()
-	l := list.New(items, delegate, 0, 0)
-	l.Title = "Beadwork"
+	l := list.New(items, delegate, m.width, m.height)
+
+	title := "Beadwork"
+	if statusFilter != "" {
+		title += " [" + statusFilter + "]"
+	}
+	l.Title = title
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 
-	return model{
-		repos: repos,
-		list:  l,
-	}
+	return l
 }
 
 func (m model) Init() tea.Cmd {
@@ -131,6 +166,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.list.SetSize(m.width, m.height)
 				return m, nil
 			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+			m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
+			m.detail = nil
+			m.list = m.buildList()
+			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -169,36 +209,45 @@ func (m model) renderDetail(iss *issue.Issue) string {
 		BorderLeft(true)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s %s\n", statusIcon(iss.Status, iss), iss.ID, priorityBadge(iss.Priority))
-	fmt.Fprintf(&b, "\n%s\n", iss.Title)
 
+	// Header
+	blocked := len(iss.BlockedBy) > 0 && iss.Status != "closed"
+	fmt.Fprintf(&b, "%s %s %s", styledStatusIcon(iss.Status, blocked), styledID(iss.ID), styledPriorityBadge(iss.Priority))
 	if iss.Type != "" {
-		fmt.Fprintf(&b, "\nType: %s", strings.ToUpper(iss.Type))
+		fmt.Fprintf(&b, " [%s]", strings.ToUpper(iss.Type))
 	}
+	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "\n%s\n", lipgloss.NewStyle().Bold(true).Render(iss.Title))
+
+	// Metadata
 	if iss.Assignee != "" {
 		fmt.Fprintf(&b, "\nAssignee: %s", iss.Assignee)
 	}
 	if iss.Parent != "" {
-		fmt.Fprintf(&b, "\nParent: %s", iss.Parent)
+		fmt.Fprintf(&b, "\nParent:   %s", styledID(iss.Parent))
 	}
-	if iss.Status != "" {
-		fmt.Fprintf(&b, "\nStatus: %s", iss.Status)
-	}
+	fmt.Fprintf(&b, "\nStatus:   %s", iss.Status)
 	if len(iss.Labels) > 0 {
-		fmt.Fprintf(&b, "\nLabels: %s", strings.Join(iss.Labels, ", "))
+		fmt.Fprintf(&b, "\nLabels:   %s", strings.Join(iss.Labels, ", "))
+	}
+	if iss.DeferUntil != "" {
+		fmt.Fprintf(&b, "\nDeferred: %s", iss.DeferUntil)
 	}
 
+	// Description
 	if iss.Description != "" {
 		fmt.Fprintf(&b, "\n\n%s", iss.Description)
 	}
 
+	// Dependencies
 	if len(iss.BlockedBy) > 0 {
 		fmt.Fprintf(&b, "\n\nBlocked by: %s", strings.Join(iss.BlockedBy, ", "))
 	}
 	if len(iss.Blocks) > 0 {
-		fmt.Fprintf(&b, "\nBlocks: %s", strings.Join(iss.Blocks, ", "))
+		fmt.Fprintf(&b, "\nBlocks:     %s", strings.Join(iss.Blocks, ", "))
 	}
 
+	// Comments
 	if len(iss.Comments) > 0 {
 		fmt.Fprintf(&b, "\n\nComments (%d):", len(iss.Comments))
 		for _, c := range iss.Comments {
@@ -218,34 +267,12 @@ func (m model) helpView() string {
 
   j/k, ↑/↓    Navigate list
   enter        Toggle detail panel
-  /            Filter issues
+  /            Filter issues (fuzzy search)
+  s            Cycle status filter (all → open → in_progress → closed → deferred)
   esc          Close detail / clear filter
   q            Quit
   ?            Toggle this help
 `
 	style := lipgloss.NewStyle().Padding(2, 4)
 	return style.Render(help)
-}
-
-func statusIcon(status string, iss *issue.Issue) string {
-	hasOpenBlockers := len(iss.BlockedBy) > 0
-	if hasOpenBlockers && status != "closed" {
-		return "⊘"
-	}
-	switch status {
-	case "open":
-		return "○"
-	case "in_progress":
-		return "◐"
-	case "closed":
-		return "✓"
-	case "deferred":
-		return "❄"
-	default:
-		return "?"
-	}
-}
-
-func priorityBadge(p int) string {
-	return fmt.Sprintf("P%d", p)
 }
