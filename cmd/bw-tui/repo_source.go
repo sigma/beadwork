@@ -48,7 +48,7 @@ func OpenRepo(path string) (*RepoSource, error) {
 	}
 
 	store := issue.NewStore(r.TreeFS(), r.Prefix)
-	// Read-only: no Committer set
+	store.Committer = r
 
 	return &RepoSource{
 		Name:   filepath.Base(abs),
