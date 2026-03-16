@@ -10,11 +10,25 @@ import (
 
 // RepoSource wraps a beadwork repository and its issue store for TUI use.
 type RepoSource struct {
-	Name   string       // short display name (e.g. "toolbox")
-	Path   string       // absolute filesystem path
-	Repo   *repo.Repo
-	Store  *issue.Store
-	Prefix string       // issue prefix (e.g. "tb")
+	Name     string       // short display name (e.g. "toolbox")
+	Path     string       // absolute filesystem path
+	Repo     *repo.Repo
+	Store    *issue.Store
+	Prefix   string       // issue prefix (e.g. "tb")
+	lastHash string       // last known ref hash for change detection
+}
+
+// Changed checks whether the beadwork branch has been modified since the
+// last call. Returns true if the underlying ref has moved.
+func (rs *RepoSource) Changed() bool {
+	rs.Store.ClearCache()
+	rs.Repo.TreeFS().Refresh()
+	hash := rs.Repo.TreeFS().RefHash().String()
+	if hash == rs.lastHash {
+		return false
+	}
+	rs.lastHash = hash
+	return true
 }
 
 // OpenRepo opens a beadwork repository at the given path and returns a

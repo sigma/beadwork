@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
@@ -11,6 +12,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/jallum/beadwork/internal/issue"
 )
+
+const refreshInterval = 3 * time.Second
+
+type tickMsg struct{}
 
 // Status filter options, cycled with 's'.
 var statusFilters = []string{"", "open", "in_progress", "closed", "deferred"}
@@ -139,7 +144,17 @@ func (m *model) buildList() list.Model {
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	// Record initial hashes so first tick doesn't trigger a spurious rebuild.
+	for _, r := range m.repos {
+		r.Changed()
+	}
+	return tickCmd()
+}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg {
+		return tickMsg{}
+	})
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -149,6 +164,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.updateLayout()
 		return m, nil
+
+	case tickMsg:
+		changed := false
+		for _, r := range m.repos {
+			if r.Changed() {
+				changed = true
+			}
+		}
+		if changed {
+			m.list = m.buildList()
+			if m.detail != nil {
+				// Re-read the detail issue in case it changed.
+				for _, r := range m.repos {
+					if iss, err := r.Store.Get(m.detail.ID); err == nil {
+						m.detail = iss
+						m.viewport.SetContent(m.renderDetailContent(iss))
+						break
+					}
+				}
+			}
+		}
+		return m, tickCmd()
 
 	case tea.KeyMsg:
 		// Don't intercept keys while filtering
