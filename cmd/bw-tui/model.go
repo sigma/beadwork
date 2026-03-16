@@ -180,6 +180,7 @@ func (m *model) buildList() list.Model {
 	l.Title = title
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
+	l.DisableQuitKeybindings()
 
 	return l
 }
