@@ -57,8 +57,23 @@ type issueItem struct {
 }
 
 func (i issueItem) Title() string {
-	var b strings.Builder
+	return plainIssueOneLiner(i)
+}
 
+// plainIssueOneLiner returns an unstyled one-liner for filtering/matching.
+func plainIssueOneLiner(i issueItem) string {
+	icon := plainStatusIcon(i.issue.Status, i.openBlockers > 0 && i.issue.Status != "closed")
+	prefix := ""
+	if i.repoName != "" {
+		prefix = i.repoName + " "
+	}
+	return fmt.Sprintf("%s %s%s P%d  %s", icon, prefix, i.issue.ID, i.issue.Priority, i.issue.Title)
+}
+
+// styledIssueOneLiner returns a lipgloss-styled one-liner for rendering
+// outside the list component (kanban, tree, deps, etc.).
+func styledIssueOneLiner(i issueItem) string {
+	var b strings.Builder
 	blocked := i.openBlockers > 0 && i.issue.Status != "closed"
 	b.WriteString(styledStatusIcon(i.issue.Status, blocked))
 	b.WriteString(" ")
@@ -71,8 +86,25 @@ func (i issueItem) Title() string {
 	b.WriteString(styledPriorityBadge(i.issue.Priority))
 	b.WriteString("  ")
 	b.WriteString(i.issue.Title)
-
 	return b.String()
+}
+
+func plainStatusIcon(status string, blocked bool) string {
+	if blocked {
+		return "⊘"
+	}
+	switch status {
+	case "open":
+		return "○"
+	case "in_progress":
+		return "◐"
+	case "closed":
+		return "✓"
+	case "deferred":
+		return "❄"
+	default:
+		return "?"
+	}
 }
 
 func (i issueItem) Description() string {
