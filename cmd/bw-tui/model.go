@@ -57,7 +57,7 @@ type issueItem struct {
 }
 
 func (i issueItem) Title() string {
-	return plainIssueOneLiner(i)
+	return styledIssueOneLiner(i)
 }
 
 // plainIssueOneLiner returns an unstyled one-liner for filtering/matching.
