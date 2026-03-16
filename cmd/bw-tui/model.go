@@ -492,6 +492,14 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 	} else {
 		m.list, cmd = m.list.Update(msg)
+		// Auto-refresh detail when selection changes
+		if m.detail != nil {
+			if item, ok := m.list.SelectedItem().(issueItem); ok && item.issue.ID != m.detail.ID {
+				m.detail = item.issue
+				m.viewport.SetContent(m.renderDetailContent(item.issue))
+				m.viewport.GotoTop()
+			}
+		}
 	}
 	return m, cmd
 }
