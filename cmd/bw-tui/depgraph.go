@@ -173,8 +173,6 @@ func renderDepGraph(dg *depGraphData, width, height int) string {
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("\n  %d/%d issues with dependencies", dg.cursor+1, len(dg.flat)))
-
 	return lipgloss.NewStyle().Padding(1, 2).Width(width).Render(b.String())
 }
 
