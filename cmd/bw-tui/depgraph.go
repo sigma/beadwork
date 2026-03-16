@@ -156,15 +156,14 @@ func renderDepGraph(dg *depGraphData, width, height int) string {
 				}
 				edgeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
 
-				// Find the target issue's status for coloring
-				targetLabel := blockedID
-				if _, exists := idIdx[blockedID]; exists {
-					target := dg.nodes[idIdx[blockedID]]
+				// Show full issue info on the edge line
+				targetLabel := styledID(blockedID)
+				if idx, exists := idIdx[blockedID]; exists {
+					target := dg.nodes[idx]
 					blocked := target.openBlockers > 0 && target.issue.Status != "closed"
 					icon := styledStatusIcon(target.issue.Status, blocked)
-					targetLabel = fmt.Sprintf("%s %s", icon, styledID(blockedID))
-				} else {
-					targetLabel = styledID(blockedID)
+					badge := styledPriorityBadge(target.issue.Priority)
+					targetLabel = fmt.Sprintf("%s %s %s %s", icon, styledID(blockedID), badge, target.issue.Title)
 				}
 
 				b.WriteString(edgeStyle.Render("    " + connector + " "))
