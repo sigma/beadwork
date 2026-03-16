@@ -89,6 +89,7 @@ type model struct {
 	view      viewKind
 	list      list.Model
 	kanban    kanbanData
+	tree      treeData
 	detail    *issue.Issue
 	viewport  viewport.Model
 	focus     focus
@@ -189,6 +190,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.list = m.buildList()
 			case viewKanban:
 				m.kanban = newKanbanData(m.repos)
+			case viewTree:
+				m.tree = newTreeData(m.repos)
 			}
 			if m.detail != nil {
 				for _, r := range m.repos {
@@ -233,6 +236,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateList(msg)
 		case viewKanban:
 			return m.updateKanban(msg)
+		case viewTree:
+			return m.updateTree(msg)
 		}
 	}
 
@@ -253,11 +258,13 @@ func switchView(m *model, v viewKind) {
 	m.detail = nil
 	m.focus = focusList
 	switch v {
-	case viewKanban:
-		m.kanban = newKanbanData(m.repos)
 	case viewList:
 		m.list = m.buildList()
 		m.updateLayout()
+	case viewKanban:
+		m.kanban = newKanbanData(m.repos)
+	case viewTree:
+		m.tree = newTreeData(m.repos)
 	}
 }
 
@@ -347,6 +354,32 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
+		m.tree.moveDown()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
+		m.tree.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("space"))):
+		m.tree.toggleExpand()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if iss := m.tree.selectedIssue(); iss != nil {
+			if m.detail != nil && m.detail.ID == iss.ID {
+				m.detail = nil
+			} else {
+				m.detail = iss
+				m.viewport.SetContent(m.renderDetailContent(iss))
+				m.viewport.GotoTop()
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		if m.detail != nil {
+			m.detail = nil
+		}
+	}
+	return m, nil
+}
+
 func (m *model) updateLayout() {
 	if m.detail != nil {
 		m.list.SetSize(m.width/2, m.height)
@@ -369,11 +402,10 @@ func (m model) View() tea.View {
 		case viewKanban:
 			mainContent = renderKanban(&m.kanban, m.width, m.height)
 		case viewTree:
-			// Placeholder until tree view is implemented
-			mainContent = lipgloss.NewStyle().Padding(2, 4).Render("Tree view — press 1 or 2 to switch views")
+			mainContent = renderTree(&m.tree, m.width, m.height-3)
 		}
 
-		if m.detail != nil && m.view != viewTree {
+		if m.detail != nil {
 			detailStyle := lipgloss.NewStyle().
 				Padding(1, 1).
 				BorderStyle(lipgloss.NormalBorder()).
