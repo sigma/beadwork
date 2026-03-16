@@ -81,8 +81,21 @@ func newDepGraphData(repos []*RepoSource) depGraphData {
 	})
 
 	dg.nodes = nodes
-	for i := range nodes {
-		dg.flat = append(dg.flat, i)
+
+	// Build set of IDs that appear as edge targets (blocked by another node).
+	// These should not appear as top-level rows since they're already shown
+	// as edges under their blockers.
+	isTarget := make(map[string]bool)
+	for _, n := range nodes {
+		for _, blockedID := range n.blocks {
+			isTarget[blockedID] = true
+		}
+	}
+
+	for i, n := range nodes {
+		if !isTarget[n.issue.ID] {
+			dg.flat = append(dg.flat, i)
+		}
 	}
 
 	return dg
