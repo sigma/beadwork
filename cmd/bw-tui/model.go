@@ -166,6 +166,9 @@ func (m *model) buildList() list.Model {
 	}
 
 	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = false
+	delegate.SetHeight(1)
+	delegate.SetSpacing(0)
 	l := list.New(items, delegate, m.width, m.height)
 
 	title := "Beadwork"
