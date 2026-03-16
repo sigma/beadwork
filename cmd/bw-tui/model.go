@@ -20,6 +20,15 @@ type tickMsg struct{}
 // Status filter options, cycled with 's'.
 var statusFilters = []string{"", "open", "in_progress", "closed", "deferred"}
 
+// viewKind identifies which top-level view is active.
+type viewKind int
+
+const (
+	viewList viewKind = iota
+	viewKanban
+	viewTree
+)
+
 // focus tracks which pane has keyboard focus.
 type focus int
 
@@ -77,7 +86,9 @@ func (i issueItem) FilterValue() string {
 
 type model struct {
 	repos     []*RepoSource
+	view      viewKind
 	list      list.Model
+	kanban    kanbanData
 	detail    *issue.Issue
 	viewport  viewport.Model
 	focus     focus
@@ -173,9 +184,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if changed {
-			m.list = m.buildList()
+			switch m.view {
+			case viewList:
+				m.list = m.buildList()
+			case viewKanban:
+				m.kanban = newKanbanData(m.repos)
+			}
 			if m.detail != nil {
-				// Re-read the detail issue in case it changed.
 				for _, r := range m.repos {
 					if iss, err := r.Store.Get(m.detail.ID); err == nil {
 						m.detail = iss
@@ -188,61 +203,109 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.KeyMsg:
-		// Don't intercept keys while filtering
-		if m.list.FilterState() == list.Filtering {
+		// Don't intercept keys while filtering (list view only)
+		if m.view == viewList && m.list.FilterState() == list.Filtering {
 			break
 		}
 
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
 			return m, tea.Quit
-		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
-			if m.detail != nil {
-				if m.focus == focusList {
-					m.focus = focusDetail
-				} else {
-					m.focus = focusList
-				}
-			}
-			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-			if m.focus == focusList {
-				if item, ok := m.list.SelectedItem().(issueItem); ok {
-					if m.detail != nil && m.detail.ID == item.issue.ID {
-						m.detail = nil
-						m.focus = focusList
-					} else {
-						m.detail = item.issue
-						m.focus = focusDetail
-						m.viewport.SetContent(m.renderDetailContent(item.issue))
-						m.viewport.GotoTop()
-					}
-					m.updateLayout()
-				}
-				return m, nil
-			}
-		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-			if m.focus == focusDetail {
-				m.focus = focusList
-				return m, nil
-			}
-			if m.detail != nil {
-				m.detail = nil
-				m.focus = focusList
-				m.updateLayout()
-				return m, nil
-			}
-		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
-			if m.focus == focusList {
-				m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
-				m.detail = nil
-				m.focus = focusList
-				m.list = m.buildList()
-				m.updateLayout()
-				return m, nil
-			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 			m.showHelp = !m.showHelp
+			return m, nil
+
+		// View switching
+		case key.Matches(msg, key.NewBinding(key.WithKeys("1"))):
+			switchView(&m, viewList)
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("2"))):
+			switchView(&m, viewKanban)
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("3"))):
+			switchView(&m, viewTree)
+			return m, nil
+		}
+
+		// View-specific key handling
+		switch m.view {
+		case viewList:
+			return m.updateList(msg)
+		case viewKanban:
+			return m.updateKanban(msg)
+		}
+	}
+
+	// Pass through to active sub-component
+	var cmd tea.Cmd
+	if m.view == viewList {
+		if m.focus == focusDetail && m.detail != nil {
+			m.viewport, cmd = m.viewport.Update(msg)
+		} else {
+			m.list, cmd = m.list.Update(msg)
+		}
+	}
+	return m, cmd
+}
+
+func switchView(m *model, v viewKind) {
+	m.view = v
+	m.detail = nil
+	m.focus = focusList
+	switch v {
+	case viewKanban:
+		m.kanban = newKanbanData(m.repos)
+	case viewList:
+		m.list = m.buildList()
+		m.updateLayout()
+	}
+}
+
+func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+		if m.detail != nil {
+			if m.focus == focusList {
+				m.focus = focusDetail
+			} else {
+				m.focus = focusList
+			}
+		}
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if m.focus == focusList {
+			if item, ok := m.list.SelectedItem().(issueItem); ok {
+				if m.detail != nil && m.detail.ID == item.issue.ID {
+					m.detail = nil
+					m.focus = focusList
+				} else {
+					m.detail = item.issue
+					m.focus = focusDetail
+					m.viewport.SetContent(m.renderDetailContent(item.issue))
+					m.viewport.GotoTop()
+				}
+				m.updateLayout()
+			}
+			return m, nil
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		if m.focus == focusDetail {
+			m.focus = focusList
+			return m, nil
+		}
+		if m.detail != nil {
+			m.detail = nil
+			m.focus = focusList
+			m.updateLayout()
+			return m, nil
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+		if m.focus == focusList {
+			m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
+			m.detail = nil
+			m.focus = focusList
+			m.list = m.buildList()
+			m.updateLayout()
 			return m, nil
 		}
 	}
@@ -254,6 +317,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 	}
 	return m, cmd
+}
+
+func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("h", "left"))):
+		m.kanban.moveLeft()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("l", "right"))):
+		m.kanban.moveRight()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
+		m.kanban.moveDown()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
+		m.kanban.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if iss := m.kanban.selectedIssue(); iss != nil {
+			if m.detail != nil && m.detail.ID == iss.ID {
+				m.detail = nil
+			} else {
+				m.detail = iss
+				m.viewport.SetContent(m.renderDetailContent(iss))
+				m.viewport.GotoTop()
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		if m.detail != nil {
+			m.detail = nil
+		}
+	}
+	return m, nil
 }
 
 func (m *model) updateLayout() {
@@ -270,29 +361,76 @@ func (m model) View() tea.View {
 	var content string
 	if m.showHelp {
 		content = m.helpView()
-	} else if m.detail != nil {
-		listStyle := lipgloss.NewStyle()
-		detailStyle := lipgloss.NewStyle().
-			Padding(1, 1).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderLeft(true)
-
-		if m.focus == focusList {
-			detailStyle = detailStyle.BorderForeground(lipgloss.Color("#555555"))
-		} else {
-			detailStyle = detailStyle.BorderForeground(lipgloss.Color("#5fafaf"))
+	} else {
+		var mainContent string
+		switch m.view {
+		case viewList:
+			mainContent = m.list.View()
+		case viewKanban:
+			mainContent = renderKanban(&m.kanban, m.width, m.height)
+		case viewTree:
+			// Placeholder until tree view is implemented
+			mainContent = lipgloss.NewStyle().Padding(2, 4).Render("Tree view — press 1 or 2 to switch views")
 		}
 
-		listView := listStyle.Render(m.list.View())
-		detailView := detailStyle.Render(m.viewport.View())
-		content = lipgloss.JoinHorizontal(lipgloss.Top, listView, detailView)
-	} else {
-		content = m.list.View()
+		if m.detail != nil && m.view != viewTree {
+			detailStyle := lipgloss.NewStyle().
+				Padding(1, 1).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true)
+
+			if m.focus == focusList {
+				detailStyle = detailStyle.BorderForeground(lipgloss.Color("#555555"))
+			} else {
+				detailStyle = detailStyle.BorderForeground(lipgloss.Color("#5fafaf"))
+			}
+
+			// In kanban mode, detail takes the right half
+			detailView := detailStyle.Render(m.viewport.View())
+			content = lipgloss.JoinHorizontal(lipgloss.Top, mainContent, detailView)
+		} else {
+			content = mainContent
+		}
 	}
+
+	// View tab bar
+	tabBar := m.renderTabBar()
+	content = lipgloss.JoinVertical(lipgloss.Left, tabBar, content)
 
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
+}
+
+func (m model) renderTabBar() string {
+	tabs := []struct {
+		key   string
+		label string
+		view  viewKind
+	}{
+		{"1", "List", viewList},
+		{"2", "Kanban", viewKanban},
+		{"3", "Tree", viewTree},
+	}
+
+	var parts []string
+	for _, t := range tabs {
+		style := lipgloss.NewStyle().Padding(0, 2)
+		label := fmt.Sprintf("[%s] %s", t.key, t.label)
+		if t.view == m.view {
+			style = style.Bold(true).Foreground(lipgloss.Color("#5fafaf"))
+		} else {
+			style = style.Foreground(lipgloss.Color("#555555"))
+		}
+		parts = append(parts, style.Render(label))
+	}
+
+	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		Width(m.width).
+		Render(bar)
 }
 
 func (m model) renderDetailContent(iss *issue.Issue) string {
@@ -353,11 +491,13 @@ func (m model) renderDetailContent(iss *issue.Issue) string {
 func (m model) helpView() string {
 	help := `Keybindings:
 
+  1/2/3        Switch view: List / Kanban / Tree
   j/k, ↑/↓    Navigate list / scroll detail
+  h/l, ←/→    Navigate kanban columns
   enter        Open detail panel
-  tab          Switch focus between list and detail
-  /            Filter issues (fuzzy search)
-  s            Cycle status filter (all → open → in_progress → closed → deferred)
+  tab          Switch focus between list and detail (list view)
+  /            Filter issues (fuzzy search, list view)
+  s            Cycle status filter (list view)
   esc          Unfocus detail / close detail / clear filter
   q            Quit
   ?            Toggle this help
