@@ -178,7 +178,7 @@ func (m *model) buildList() list.Model {
 		title += " [all]"
 	}
 	l.Title = title
-	l.SetShowStatusBar(true)
+	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 
 	return l
