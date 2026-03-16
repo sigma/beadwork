@@ -73,7 +73,10 @@ func FindRepoAt(dir string) (*Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("not a git repository")
 	}
+	return openRepoFromGitDir(gitDir, dir)
+}
 
+func openRepoFromGitDir(gitDir string, cwd string) (*Repo, error) {
 	repoDir := filepath.Dir(gitDir)
 	goRepo, err := openGitRepo(repoDir)
 	if err != nil {
@@ -87,7 +90,7 @@ func FindRepoAt(dir string) (*Repo, error) {
 
 	r := &Repo{
 		GitDir: gitDir,
-		CWD:    dir,
+		CWD:    cwd,
 		tfs:    tfs,
 	}
 
@@ -683,8 +686,11 @@ func (r *Repo) gitPush(remoteName string, refSpec config.RefSpec) error {
 // If .git is a file (worktree), it reads the gitdir path and
 // then reads commondir to resolve the shared .git directory.
 func findGitDir(startDir string) (string, error) {
-	dir := startDir
+	return findGitDirAt(startDir)
+}
 
+// findGitDirAt walks up from dir looking for .git (file or directory).
+func findGitDirAt(dir string) (string, error) {
 	for {
 		dotGit := filepath.Join(dir, ".git")
 		fi, err := os.Stat(dotGit)
