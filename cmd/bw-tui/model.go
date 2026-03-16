@@ -128,6 +128,18 @@ func (i issueItem) FilterValue() string {
 	return i.issue.ID + " " + i.issue.Title
 }
 
+// matchesFilter returns true if the issue matches the given filter text
+// (case-insensitive substring match on ID, title, and description).
+func (i issueItem) matchesFilter(filter string) bool {
+	if filter == "" {
+		return true
+	}
+	needle := strings.ToLower(filter)
+	return strings.Contains(strings.ToLower(i.issue.ID), needle) ||
+		strings.Contains(strings.ToLower(i.issue.Title), needle) ||
+		strings.Contains(strings.ToLower(i.issue.Description), needle)
+}
+
 type model struct {
 	repos     []*RepoSource
 	view      viewKind
@@ -143,6 +155,11 @@ type model struct {
 	showHelp  bool
 	statusIdx int // index into statusFilters
 
+	// Filter state (cross-view)
+	filterText   string
+	filterInput  textinput.Model
+	filterActive bool // true when typing in the filter input
+
 	// Overlay state
 	overlay    overlayKind
 	overlayID  string          // issue ID the overlay applies to
@@ -155,10 +172,15 @@ func newModel(repos []*RepoSource) model {
 	ti.Placeholder = "Enter comment..."
 	ti.CharLimit = 500
 
+	fi := textinput.New()
+	fi.Placeholder = "Filter..."
+	fi.CharLimit = 100
+
 	m := model{
-		repos:     repos,
-		viewport:  viewport.New(),
-		textInput: ti,
+		repos:       repos,
+		viewport:    viewport.New(),
+		textInput:   ti,
+		filterInput: fi,
 	}
 	m.list = m.buildList()
 	return m
@@ -189,11 +211,14 @@ func (m *model) buildList() list.Model {
 					openBlockers++
 				}
 			}
-			items = append(items, issueItem{
+			item := issueItem{
 				issue:        iss,
 				repoName:     name,
 				openBlockers: openBlockers,
-			})
+			}
+			if item.matchesFilter(m.filterText) {
+				items = append(items, item)
+			}
 		}
 	}
 
@@ -211,7 +236,7 @@ func (m *model) buildList() list.Model {
 	}
 	l.Title = title
 	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(true)
+	l.SetFilteringEnabled(false)
 	l.DisableQuitKeybindings()
 
 	return l
@@ -251,11 +276,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case viewList:
 				m.list = m.buildList()
 			case viewKanban:
-				m.kanban = newKanbanData(m.repos)
+				m.kanban = newKanbanData(m.repos, m.filterText)
 			case viewTree:
-				m.tree = newTreeData(m.repos)
+				m.tree = newTreeData(m.repos, m.filterText)
 			case viewDeps:
-				m.deps = newDepGraphData(m.repos)
+				m.deps = newDepGraphData(m.repos, m.filterText)
 			}
 			if m.detail != nil {
 				for _, r := range m.repos {
@@ -273,14 +298,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear transient status on any keypress
 		m.statusMsg = ""
 
-		// Handle overlay input first
-		if m.overlay != overlayNone {
-			return m.updateOverlay(msg)
+		// Handle filter input
+		if m.filterActive {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+				m.filterText = m.filterInput.Value()
+				m.filterActive = false
+				m.filterInput.Blur()
+				m.refreshCurrentView()
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+				m.filterActive = false
+				m.filterInput.Blur()
+				// Restore previous filter (don't apply partial input)
+				m.filterInput.SetValue(m.filterText)
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.filterInput, cmd = m.filterInput.Update(msg)
+				return m, cmd
+			}
 		}
 
-		// Don't intercept keys while filtering (list view only)
-		if m.view == viewList && m.list.FilterState() == list.Filtering {
-			break
+		// Handle overlay input
+		if m.overlay != overlayNone {
+			return m.updateOverlay(msg)
 		}
 
 		switch {
@@ -289,6 +331,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 			m.showHelp = !m.showHelp
 			return m, nil
+
+		// Filter
+		case key.Matches(msg, key.NewBinding(key.WithKeys("/"))):
+			m.filterActive = true
+			m.filterInput.Focus()
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			// Priority: close detail > clear filter
+			if m.detail != nil {
+				m.detail = nil
+				m.focus = focusList
+				m.updateLayout()
+				return m, nil
+			}
+			if m.filterText != "" {
+				m.filterText = ""
+				m.filterInput.SetValue("")
+				m.refreshCurrentView()
+				return m, nil
+			}
 
 		// View switching
 		case key.Matches(msg, key.NewBinding(key.WithKeys("1"))):
@@ -391,11 +453,11 @@ func (m *model) refreshCurrentView() {
 	case viewList:
 		m.list = m.buildList()
 	case viewKanban:
-		m.kanban = newKanbanData(m.repos)
+		m.kanban = newKanbanData(m.repos, m.filterText)
 	case viewTree:
-		m.tree = newTreeData(m.repos)
+		m.tree = newTreeData(m.repos, m.filterText)
 	case viewDeps:
-		m.deps = newDepGraphData(m.repos)
+		m.deps = newDepGraphData(m.repos, m.filterText)
 	}
 	// Refresh detail if open
 	if m.detail != nil {
@@ -467,11 +529,11 @@ func switchView(m *model, v viewKind) {
 		m.list = m.buildList()
 		m.updateLayout()
 	case viewKanban:
-		m.kanban = newKanbanData(m.repos)
+		m.kanban = newKanbanData(m.repos, m.filterText)
 	case viewTree:
-		m.tree = newTreeData(m.repos)
+		m.tree = newTreeData(m.repos, m.filterText)
 	case viewDeps:
-		m.deps = newDepGraphData(m.repos)
+		m.deps = newDepGraphData(m.repos, m.filterText)
 	}
 }
 
@@ -500,13 +562,6 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				m.updateLayout()
 			}
-			return m, nil
-		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		if m.detail != nil {
-			m.detail = nil
-			m.focus = focusList
-			m.updateLayout()
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
@@ -557,10 +612,6 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoTop()
 			}
 		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		if m.detail != nil {
-			m.detail = nil
-		}
 	}
 	return m, nil
 }
@@ -583,10 +634,6 @@ func (m model) updateTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoTop()
 			}
 		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		if m.detail != nil {
-			m.detail = nil
-		}
 	}
 	return m, nil
 }
@@ -606,10 +653,6 @@ func (m model) updateDeps(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.viewport.SetContent(m.renderDetailContent(iss))
 				m.viewport.GotoTop()
 			}
-		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		if m.detail != nil {
-			m.detail = nil
 		}
 	}
 	return m, nil
@@ -727,6 +770,15 @@ func (m model) renderTabBar() string {
 		parts = append(parts, style.Render(label))
 	}
 
+	// Filter indicator
+	if m.filterActive {
+		filterStyle := lipgloss.NewStyle().Padding(0, 2)
+		parts = append(parts, filterStyle.Render("/ "+m.filterInput.View()))
+	} else if m.filterText != "" {
+		filterStyle := lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("#d7af5f"))
+		parts = append(parts, filterStyle.Render(fmt.Sprintf("filter: %s (esc to clear)", m.filterText)))
+	}
+
 	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 	return lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
@@ -800,9 +852,9 @@ func (m model) helpView() string {
     space        Toggle expand/collapse (tree view)
     enter        Open detail panel
     tab          Switch focus between list and detail (list view)
-    /            Filter issues (fuzzy search, list view)
+    /            Filter issues (all views, substring match)
     s            Cycle status filter (list view)
-    esc          Unfocus detail / close detail / clear filter
+    esc          Close detail / clear filter
 
   Actions
     S            Start issue (open → in_progress)

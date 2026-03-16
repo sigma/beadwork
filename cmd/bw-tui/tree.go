@@ -22,7 +22,7 @@ type treeData struct {
 	cursor   int               // index into flat
 }
 
-func newTreeData(repos []*RepoSource) treeData {
+func newTreeData(repos []*RepoSource, filterText string) treeData {
 	multiRepo := len(repos) > 1
 	td := treeData{}
 
@@ -57,8 +57,44 @@ func newTreeData(repos []*RepoSource) treeData {
 		}
 	}
 
+	if filterText != "" {
+		td.roots = filterTreeNodes(td.roots, filterText)
+	}
+
 	td.rebuildFlat()
 	return td
+}
+
+// filterTreeNodes prunes tree nodes that don't match the filter.
+// A parent is kept if it matches or any descendant matches.
+func filterTreeNodes(nodes []*treeNode, filter string) []*treeNode {
+	var result []*treeNode
+	for _, n := range nodes {
+		filtered := filterTreeNode(n, filter)
+		if filtered != nil {
+			result = append(result, filtered)
+		}
+	}
+	return result
+}
+
+func filterTreeNode(n *treeNode, filter string) *treeNode {
+	selfMatches := n.item.matchesFilter(filter)
+
+	var filteredChildren []*treeNode
+	for _, child := range n.children {
+		fc := filterTreeNode(child, filter)
+		if fc != nil {
+			filteredChildren = append(filteredChildren, fc)
+		}
+	}
+
+	if selfMatches || len(filteredChildren) > 0 {
+		copy := *n
+		copy.children = filteredChildren
+		return &copy
+	}
+	return nil
 }
 
 func buildTreeNode(iss *issue.Issue, childrenOf map[string][]*issue.Issue, store *issue.Store, repoName string) *treeNode {

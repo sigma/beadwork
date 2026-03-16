@@ -27,7 +27,7 @@ type kanbanData struct {
 	multiRepo bool
 }
 
-func newKanbanData(repos []*RepoSource) kanbanData {
+func newKanbanData(repos []*RepoSource, filterText string) kanbanData {
 	multiRepo := len(repos) > 1
 	kd := kanbanData{multiRepo: multiRepo}
 
@@ -48,11 +48,14 @@ func newKanbanData(repos []*RepoSource) kanbanData {
 						openBlockers++
 					}
 				}
-				kd.columns[colIdx] = append(kd.columns[colIdx], issueItem{
+				item := issueItem{
 					issue:        iss,
 					repoName:     name,
 					openBlockers: openBlockers,
-				})
+				}
+				if item.matchesFilter(filterText) {
+					kd.columns[colIdx] = append(kd.columns[colIdx], item)
+				}
 			}
 		}
 	}

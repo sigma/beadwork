@@ -24,7 +24,7 @@ type depNode struct {
 	blockedBy    []string // IDs that block this issue
 }
 
-func newDepGraphData(repos []*RepoSource) depGraphData {
+func newDepGraphData(repos []*RepoSource, filterText string) depGraphData {
 	multiRepo := len(repos) > 1
 	dg := depGraphData{}
 
@@ -56,6 +56,10 @@ func newDepGraphData(repos []*RepoSource) depGraphData {
 				if !r.Store.IsClosed(bid) {
 					openBlockers++
 				}
+			}
+			item := issueItem{issue: iss, repoName: name, openBlockers: openBlockers}
+			if !item.matchesFilter(filterText) {
+				continue
 			}
 			nodes = append(nodes, depNode{
 				issue:        iss,
