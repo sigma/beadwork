@@ -470,10 +470,6 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		if m.focus == focusDetail {
-			m.focus = focusList
-			return m, nil
-		}
 		if m.detail != nil {
 			m.detail = nil
 			m.focus = focusList
