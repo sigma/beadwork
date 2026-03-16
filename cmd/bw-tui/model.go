@@ -6,6 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/jallum/beadwork/internal/issue"
@@ -14,11 +15,19 @@ import (
 // Status filter options, cycled with 's'.
 var statusFilters = []string{"", "open", "in_progress", "closed", "deferred"}
 
+// focus tracks which pane has keyboard focus.
+type focus int
+
+const (
+	focusList focus = iota
+	focusDetail
+)
+
 // issueItem wraps an issue for the list.Model.
 type issueItem struct {
-	issue       *issue.Issue
-	repoName    string // empty when single-repo
-	openBlockers int   // count of non-closed blockers
+	issue        *issue.Issue
+	repoName     string // empty when single-repo
+	openBlockers int    // count of non-closed blockers
 }
 
 func (i issueItem) Title() string {
@@ -62,17 +71,22 @@ func (i issueItem) FilterValue() string {
 }
 
 type model struct {
-	repos       []*RepoSource
-	list        list.Model
-	detail      *issue.Issue
-	width       int
-	height      int
-	showHelp    bool
-	statusIdx   int // index into statusFilters
+	repos     []*RepoSource
+	list      list.Model
+	detail    *issue.Issue
+	viewport  viewport.Model
+	focus     focus
+	width     int
+	height    int
+	showHelp  bool
+	statusIdx int // index into statusFilters
 }
 
 func newModel(repos []*RepoSource) model {
-	m := model{repos: repos}
+	m := model{
+		repos:    repos,
+		viewport: viewport.New(),
+	}
 	m.list = m.buildList()
 	return m
 }
@@ -133,11 +147,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		if m.detail != nil {
-			m.list.SetSize(msg.Width/2, msg.Height)
-		} else {
-			m.list.SetSize(msg.Width, msg.Height)
-		}
+		m.updateLayout()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -149,28 +159,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("q"))):
 			return m, tea.Quit
-		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-			if item, ok := m.list.SelectedItem().(issueItem); ok {
-				if m.detail != nil && m.detail.ID == item.issue.ID {
-					m.detail = nil
-					m.list.SetSize(m.width, m.height)
+		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+			if m.detail != nil {
+				if m.focus == focusList {
+					m.focus = focusDetail
 				} else {
-					m.detail = item.issue
-					m.list.SetSize(m.width/2, m.height)
+					m.focus = focusList
 				}
 			}
 			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			if m.focus == focusList {
+				if item, ok := m.list.SelectedItem().(issueItem); ok {
+					if m.detail != nil && m.detail.ID == item.issue.ID {
+						m.detail = nil
+						m.focus = focusList
+					} else {
+						m.detail = item.issue
+						m.focus = focusDetail
+						m.viewport.SetContent(m.renderDetailContent(item.issue))
+						m.viewport.GotoTop()
+					}
+					m.updateLayout()
+				}
+				return m, nil
+			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			if m.focus == focusDetail {
+				m.focus = focusList
+				return m, nil
+			}
 			if m.detail != nil {
 				m.detail = nil
-				m.list.SetSize(m.width, m.height)
+				m.focus = focusList
+				m.updateLayout()
 				return m, nil
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
-			m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
-			m.detail = nil
-			m.list = m.buildList()
-			return m, nil
+			if m.focus == focusList {
+				m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
+				m.detail = nil
+				m.focus = focusList
+				m.list = m.buildList()
+				m.updateLayout()
+				return m, nil
+			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -178,8 +211,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
+	if m.focus == focusDetail && m.detail != nil {
+		m.viewport, cmd = m.viewport.Update(msg)
+	} else {
+		m.list, cmd = m.list.Update(msg)
+	}
 	return m, cmd
+}
+
+func (m *model) updateLayout() {
+	if m.detail != nil {
+		m.list.SetSize(m.width/2, m.height)
+		m.viewport.SetWidth(m.width - m.width/2 - 3) // 3 for border + padding
+		m.viewport.SetHeight(m.height - 2)            // padding
+	} else {
+		m.list.SetSize(m.width, m.height)
+	}
 }
 
 func (m model) View() tea.View {
@@ -187,8 +234,20 @@ func (m model) View() tea.View {
 	if m.showHelp {
 		content = m.helpView()
 	} else if m.detail != nil {
-		listView := m.list.View()
-		detailView := m.renderDetail(m.detail)
+		listStyle := lipgloss.NewStyle()
+		detailStyle := lipgloss.NewStyle().
+			Padding(1, 1).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderLeft(true)
+
+		if m.focus == focusList {
+			detailStyle = detailStyle.BorderForeground(lipgloss.Color("#555555"))
+		} else {
+			detailStyle = detailStyle.BorderForeground(lipgloss.Color("#5fafaf"))
+		}
+
+		listView := listStyle.Render(m.list.View())
+		detailView := detailStyle.Render(m.viewport.View())
 		content = lipgloss.JoinHorizontal(lipgloss.Top, listView, detailView)
 	} else {
 		content = m.list.View()
@@ -199,15 +258,7 @@ func (m model) View() tea.View {
 	return v
 }
 
-func (m model) renderDetail(iss *issue.Issue) string {
-	w := m.width - m.width/2
-
-	style := lipgloss.NewStyle().
-		Width(w).
-		Padding(1, 2).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderLeft(true)
-
+func (m model) renderDetailContent(iss *issue.Issue) string {
 	var b strings.Builder
 
 	// Header
@@ -259,17 +310,18 @@ func (m model) renderDetail(iss *issue.Issue) string {
 		}
 	}
 
-	return style.Render(b.String())
+	return b.String()
 }
 
 func (m model) helpView() string {
 	help := `Keybindings:
 
-  j/k, ↑/↓    Navigate list
-  enter        Toggle detail panel
+  j/k, ↑/↓    Navigate list / scroll detail
+  enter        Open detail panel
+  tab          Switch focus between list and detail
   /            Filter issues (fuzzy search)
   s            Cycle status filter (all → open → in_progress → closed → deferred)
-  esc          Close detail / clear filter
+  esc          Unfocus detail / close detail / clear filter
   q            Quit
   ?            Toggle this help
 `
