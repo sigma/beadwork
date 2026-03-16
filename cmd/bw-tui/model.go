@@ -594,14 +594,20 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("h", "left"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("h"))):
 		m.kanban.moveLeft()
-	case key.Matches(msg, key.NewBinding(key.WithKeys("l", "right"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("l"))):
 		m.kanban.moveRight()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
 		m.kanban.moveDown()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
 		m.kanban.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
+		m.kanban.prevWindow()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
+		m.kanban.nextWindow()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
+		m.kanban.cycleWindow()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		if iss := m.kanban.selectedIssue(); iss != nil {
 			if m.detail != nil && m.detail.ID == iss.ID {
@@ -848,7 +854,9 @@ func (m model) helpView() string {
   Navigation
     1/2/3/4      Switch view: List / Kanban / Tree / Deps
     j/k, ↑/↓    Navigate list / scroll detail
-    h/l, ←/→    Navigate kanban columns
+    h/l          Navigate kanban columns
+    ←/→          Navigate kanban time window
+    w            Cycle time window (all → month → week → today)
     space        Toggle expand/collapse (tree view)
     enter        Open detail panel
     tab          Switch focus between list and detail (list view)

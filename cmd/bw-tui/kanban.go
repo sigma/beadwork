@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/jallum/beadwork/internal/issue"
@@ -19,19 +20,115 @@ var kanbanColumns = []struct {
 	{"deferred", "Deferred"},
 }
 
+// timeWindow defines the kanban time window options.
+type timeWindow int
+
+const (
+	windowForever timeWindow = iota
+	windowMonth
+	windowWeek
+	windowToday
+)
+
+var windowDurations = map[timeWindow]time.Duration{
+	windowMonth: 30 * 24 * time.Hour,
+	windowWeek:  7 * 24 * time.Hour,
+	windowToday: 24 * time.Hour,
+}
+
+var windowLabels = map[timeWindow]string{
+	windowForever: "all time",
+	windowMonth:   "month",
+	windowWeek:    "week",
+	windowToday:   "today",
+}
+
+var windowCycle = []timeWindow{windowForever, windowMonth, windowWeek, windowToday}
+
 // kanbanData holds the categorized issues for the kanban view.
 type kanbanData struct {
 	columns   [4][]issueItem // indexed by kanbanColumns order
 	colIdx    int            // currently focused column
 	rowIdx    int            // currently focused row within column
 	multiRepo bool
+
+	// Time window state
+	window    timeWindow
+	windowIdx int       // offset: 0 = current window, -1 = previous, etc.
+	repos     []*RepoSource
+	filter    string
 }
 
 func newKanbanData(repos []*RepoSource, filterText string) kanbanData {
-	multiRepo := len(repos) > 1
-	kd := kanbanData{multiRepo: multiRepo}
+	kd := kanbanData{
+		multiRepo: len(repos) > 1,
+		repos:     repos,
+		filter:    filterText,
+	}
+	kd.loadIssues()
+	return kd
+}
 
-	for _, r := range repos {
+// windowBounds returns the start and end time for the current window setting.
+// Returns zero times for "forever".
+func (kd *kanbanData) windowBounds() (start, end time.Time) {
+	dur, ok := windowDurations[kd.window]
+	if !ok {
+		return // forever: zero times
+	}
+
+	now := time.Now().UTC()
+	// Each offset shifts the window back by one duration
+	end = now.Add(time.Duration(kd.windowIdx) * dur)
+	start = end.Add(-dur)
+	return
+}
+
+func (kd *kanbanData) windowLabel() string {
+	label := windowLabels[kd.window]
+	if kd.window == windowForever {
+		return label
+	}
+	start, end := kd.windowBounds()
+	if kd.windowIdx == 0 {
+		return fmt.Sprintf("%s (ending %s)", label, end.Format("Jan 2"))
+	}
+	return fmt.Sprintf("%s (%s – %s)", label, start.Format("Jan 2"), end.Format("Jan 2"))
+}
+
+// issueInWindow returns true if the issue has activity within the time window.
+// For open/in_progress: checks created or updated time.
+// For closed: checks closed_at time.
+// For "forever" window, always returns true.
+func issueInWindow(iss *issue.Issue, start, end time.Time) bool {
+	if start.IsZero() && end.IsZero() {
+		return true
+	}
+	// Check the most relevant timestamp for the issue's status
+	timestamps := []string{iss.Created, iss.UpdatedAt, iss.ClosedAt}
+	for _, ts := range timestamps {
+		if ts == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			continue
+		}
+		if !t.Before(start) && t.Before(end) {
+			return true
+		}
+	}
+	return false
+}
+
+func (kd *kanbanData) loadIssues() {
+	for i := range kd.columns {
+		kd.columns[i] = nil
+	}
+
+	start, end := kd.windowBounds()
+
+	for _, r := range kd.repos {
 		for colIdx, col := range kanbanColumns {
 			issues, err := r.Store.List(issue.Filter{Status: col.status})
 			if err != nil {
@@ -39,7 +136,7 @@ func newKanbanData(repos []*RepoSource, filterText string) kanbanData {
 			}
 			for _, iss := range issues {
 				name := ""
-				if multiRepo {
+				if kd.multiRepo {
 					name = r.Name
 				}
 				openBlockers := 0
@@ -53,14 +150,48 @@ func newKanbanData(repos []*RepoSource, filterText string) kanbanData {
 					repoName:     name,
 					openBlockers: openBlockers,
 				}
-				if item.matchesFilter(filterText) {
-					kd.columns[colIdx] = append(kd.columns[colIdx], item)
+				if !item.matchesFilter(kd.filter) {
+					continue
 				}
+				if !issueInWindow(iss, start, end) {
+					continue
+				}
+				kd.columns[colIdx] = append(kd.columns[colIdx], item)
 			}
 		}
 	}
+	kd.clampRow()
+}
 
-	return kd
+func (kd *kanbanData) cycleWindow() {
+	idx := 0
+	for i, w := range windowCycle {
+		if w == kd.window {
+			idx = i
+			break
+		}
+	}
+	kd.window = windowCycle[(idx+1)%len(windowCycle)]
+	kd.windowIdx = 0
+	kd.loadIssues()
+}
+
+func (kd *kanbanData) prevWindow() {
+	if kd.window == windowForever {
+		return
+	}
+	kd.windowIdx--
+	kd.loadIssues()
+}
+
+func (kd *kanbanData) nextWindow() {
+	if kd.window == windowForever {
+		return
+	}
+	if kd.windowIdx < 0 {
+		kd.windowIdx++
+		kd.loadIssues()
+	}
 }
 
 func (kd *kanbanData) moveLeft() {
@@ -110,6 +241,17 @@ func (kd *kanbanData) selectedIssue() *issue.Issue {
 }
 
 func renderKanban(kd *kanbanData, width, height int) string {
+	// Time window header
+	windowHeader := ""
+	if kd.window != windowForever {
+		style := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#d7af5f")).
+			Padding(0, 1)
+		nav := "← prev  w cycle  next →"
+		windowHeader = style.Render(fmt.Sprintf("Window: %s    %s", kd.windowLabel(), nav)) + "\n"
+		height-- // account for header line
+	}
+
 	colWidth := width / len(kanbanColumns)
 	if colWidth < 20 {
 		colWidth = 20
@@ -179,7 +321,8 @@ func renderKanban(kd *kanbanData, width, height int) string {
 		rendered = append(rendered, colStyle.Render(b.String()))
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+	board := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+	return windowHeader + board
 }
 
 func renderKanbanCard(item issueItem, width int, selected bool) string {
