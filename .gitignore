@@ -3,7 +3,7 @@
 
 # AI Agent cruft
 CLAUDE.md
-.claude
+.claude/settings.*
 
 # Code Coverage
 coverage.out
