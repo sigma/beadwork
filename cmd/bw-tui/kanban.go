@@ -221,6 +221,31 @@ func (kd *kanbanData) moveDown() {
 	}
 }
 
+func (kd *kanbanData) pageUp(n int) {
+	if n < 1 {
+		n = 1
+	}
+	kd.rowIdx -= n
+	if kd.rowIdx < 0 {
+		kd.rowIdx = 0
+	}
+}
+
+func (kd *kanbanData) pageDown(n int) {
+	if n < 1 {
+		n = 1
+	}
+	col := kd.columns[kd.colIdx]
+	kd.rowIdx += n
+	if kd.rowIdx >= len(col) {
+		if len(col) > 0 {
+			kd.rowIdx = len(col) - 1
+		} else {
+			kd.rowIdx = 0
+		}
+	}
+}
+
 func (kd *kanbanData) clampRow() {
 	col := kd.columns[kd.colIdx]
 	if kd.rowIdx >= len(col) {

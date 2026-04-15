@@ -22,7 +22,7 @@ type treeData struct {
 	cursor   int               // index into flat
 }
 
-func newTreeData(repos []*RepoSource, filterText string) treeData {
+func newTreeData(repos []*RepoSource, filterText string, statusFilter string) treeData {
 	multiRepo := len(repos) > 1
 	td := treeData{}
 
@@ -57,6 +57,9 @@ func newTreeData(repos []*RepoSource, filterText string) treeData {
 		}
 	}
 
+	if statusFilter != "" {
+		td.roots = filterTreeNodesByStatus(td.roots, statusFilter)
+	}
 	if filterText != "" {
 		td.roots = filterTreeNodes(td.roots, filterText)
 	}
@@ -111,12 +114,26 @@ func buildTreeNode(iss *issue.Issue, childrenOf map[string][]*issue.Issue, store
 			repoName:     repoName,
 			openBlockers: openBlockers,
 		},
-		expanded: true, // expanded by default
+		expanded: true,
 	}
 
 	for _, child := range childrenOf[iss.ID] {
 		childNode := buildTreeNode(child, childrenOf, store, repoName)
 		node.children = append(node.children, childNode)
+	}
+
+	// Auto-collapse if all children are completed
+	if len(node.children) > 0 {
+		allCompleted := true
+		for _, ch := range node.children {
+			if ch.item.issue.Status != "closed" {
+				allCompleted = false
+				break
+			}
+		}
+		if allCompleted {
+			node.expanded = false
+		}
 	}
 
 	return node
@@ -203,7 +220,104 @@ func findDepth(node *treeNode, target *treeNode, depth int) int {
 	return -1
 }
 
-func renderTree(td *treeData, width, height int) string {
+func (td *treeData) pageUp(n int) {
+	if n < 1 {
+		n = 1
+	}
+	td.cursor -= n
+	if td.cursor < 0 {
+		td.cursor = 0
+	}
+}
+
+func (td *treeData) pageDown(n int) {
+	if n < 1 {
+		n = 1
+	}
+	td.cursor += n
+	if td.cursor >= len(td.flat) {
+		if len(td.flat) > 0 {
+			td.cursor = len(td.flat) - 1
+		} else {
+			td.cursor = 0
+		}
+	}
+}
+
+func (td *treeData) expandOrDescend() {
+	if td.cursor >= len(td.flat) {
+		return
+	}
+	node := td.flat[td.cursor]
+	if len(node.children) == 0 {
+		return
+	}
+	if !node.expanded {
+		node.expanded = true
+		td.rebuildFlat()
+	} else {
+		// Move to first child
+		if td.cursor+1 < len(td.flat) {
+			td.cursor++
+		}
+	}
+}
+
+func (td *treeData) collapseOrAscend() {
+	if td.cursor >= len(td.flat) {
+		return
+	}
+	node := td.flat[td.cursor]
+	if node.expanded && len(node.children) > 0 {
+		node.expanded = false
+		td.rebuildFlat()
+	} else {
+		// Move to parent
+		depth := td.nodeDepth(td.cursor)
+		if depth > 0 {
+			for i := td.cursor - 1; i >= 0; i-- {
+				if td.nodeDepth(i) < depth {
+					td.cursor = i
+					break
+				}
+			}
+		}
+	}
+}
+
+// filterTreeNodesByStatus prunes tree nodes that don't match the status filter.
+// A parent is kept if it matches or any descendant matches.
+func filterTreeNodesByStatus(nodes []*treeNode, status string) []*treeNode {
+	var result []*treeNode
+	for _, n := range nodes {
+		filtered := filterTreeNodeByStatus(n, status)
+		if filtered != nil {
+			result = append(result, filtered)
+		}
+	}
+	return result
+}
+
+func filterTreeNodeByStatus(n *treeNode, status string) *treeNode {
+	selfMatches := n.item.issue.Status == status
+
+	var filteredChildren []*treeNode
+	for _, child := range n.children {
+		fc := filterTreeNodeByStatus(child, status)
+		if fc != nil {
+			filteredChildren = append(filteredChildren, fc)
+		}
+	}
+
+	if selfMatches || len(filteredChildren) > 0 {
+		copy := *n
+		copy.children = filteredChildren
+		return &copy
+	}
+	return nil
+}
+
+func renderTree(td *treeData, width, height int, statusFilter string) string {
 	if len(td.flat) == 0 {
 		return lipgloss.NewStyle().Padding(2, 4).
 			Foreground(lipgloss.Color("#555555")).
@@ -211,7 +325,13 @@ func renderTree(td *treeData, width, height int) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Issue Tree"))
+	title := "Issue Tree"
+	if statusFilter != "" {
+		title += " [" + statusFilter + "]"
+	} else {
+		title += " [all]"
+	}
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(title))
 	b.WriteString("\n\n")
 
 	// Determine visible window

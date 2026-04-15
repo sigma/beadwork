@@ -278,9 +278,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case viewKanban:
 				m.kanban = newKanbanData(m.repos, m.filterText)
 			case viewTree:
-				m.tree = newTreeData(m.repos, m.filterText)
+				m.tree = newTreeData(m.repos, m.filterText, statusFilters[m.statusIdx])
 			case viewDeps:
-				m.deps = newDepGraphData(m.repos, m.filterText)
+				m.deps = newDepGraphData(m.repos, m.filterText, statusFilters[m.statusIdx])
 			}
 			if m.detail != nil {
 				for _, r := range m.repos {
@@ -455,9 +455,9 @@ func (m *model) refreshCurrentView() {
 	case viewKanban:
 		m.kanban = newKanbanData(m.repos, m.filterText)
 	case viewTree:
-		m.tree = newTreeData(m.repos, m.filterText)
+		m.tree = newTreeData(m.repos, m.filterText, statusFilters[m.statusIdx])
 	case viewDeps:
-		m.deps = newDepGraphData(m.repos, m.filterText)
+		m.deps = newDepGraphData(m.repos, m.filterText, statusFilters[m.statusIdx])
 	}
 	// Refresh detail if open
 	if m.detail != nil {
@@ -531,9 +531,9 @@ func switchView(m *model, v viewKind) {
 	case viewKanban:
 		m.kanban = newKanbanData(m.repos, m.filterText)
 	case viewTree:
-		m.tree = newTreeData(m.repos, m.filterText)
+		m.tree = newTreeData(m.repos, m.filterText, statusFilters[m.statusIdx])
 	case viewDeps:
-		m.deps = newDepGraphData(m.repos, m.filterText)
+		m.deps = newDepGraphData(m.repos, m.filterText, statusFilters[m.statusIdx])
 	}
 }
 
@@ -602,6 +602,10 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.kanban.moveDown()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
 		m.kanban.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+		m.kanban.pageDown(m.height - 9)
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+		m.kanban.pageUp(m.height - 9)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
 		m.kanban.prevWindow()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
@@ -628,8 +632,22 @@ func (m model) updateTree(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tree.moveDown()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
 		m.tree.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+		m.tree.pageDown(m.height - 9)
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+		m.tree.pageUp(m.height - 9)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("space"))):
 		m.tree.toggleExpand()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
+		m.tree.expandOrDescend()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
+		m.tree.collapseOrAscend()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+		m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
+		m.detail = nil
+		m.focus = focusList
+		m.tree = newTreeData(m.repos, m.filterText, statusFilters[m.statusIdx])
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		if iss := m.tree.selectedIssue(); iss != nil {
 			if m.detail != nil && m.detail.ID == iss.ID {
@@ -650,6 +668,22 @@ func (m model) updateDeps(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.deps.moveDown()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
 		m.deps.moveUp()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+		m.deps.pageDown(m.height - 9)
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+		m.deps.pageUp(m.height - 9)
+	case key.Matches(msg, key.NewBinding(key.WithKeys("space"))):
+		m.deps.toggleExpand()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
+		m.deps.expand()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
+		m.deps.collapse()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+		m.statusIdx = (m.statusIdx + 1) % len(statusFilters)
+		m.detail = nil
+		m.focus = focusList
+		m.deps = newDepGraphData(m.repos, m.filterText, statusFilters[m.statusIdx])
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		if iss := m.deps.selectedIssue(); iss != nil {
 			if m.detail != nil && m.detail.ID == iss.ID {
@@ -686,9 +720,9 @@ func (m model) View() tea.View {
 		case viewKanban:
 			mainContent = renderKanban(&m.kanban, m.width, m.height)
 		case viewTree:
-			mainContent = renderTree(&m.tree, m.width, m.height-3)
+			mainContent = renderTree(&m.tree, m.width, m.height-3, statusFilters[m.statusIdx])
 		case viewDeps:
-			mainContent = renderDepGraph(&m.deps, m.width, m.height-3)
+			mainContent = renderDepGraph(&m.deps, m.width, m.height-3, statusFilters[m.statusIdx])
 		}
 
 		if m.detail != nil {
@@ -854,14 +888,15 @@ func (m model) helpView() string {
   Navigation
     1/2/3/4      Switch view: List / Kanban / Tree / Deps
     j/k, ↑/↓    Navigate list / scroll detail
+    PgUp/PgDn    Page up/down
     h/l          Navigate kanban columns
-    ←/→          Navigate kanban time window
+    ←/→          Expand/collapse (tree/deps), navigate kanban time window
     w            Cycle time window (all → month → week → today)
-    space        Toggle expand/collapse (tree view)
+    space        Toggle expand/collapse (tree/deps view)
     enter        Open detail panel
     tab          Switch focus between list and detail (list view)
     /            Filter issues (all views, substring match)
-    s            Cycle status filter (list view)
+    s            Cycle status filter (list/tree/deps view)
     esc          Close detail / clear filter
 
   Actions

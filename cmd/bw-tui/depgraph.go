@@ -22,9 +22,10 @@ type depNode struct {
 	openBlockers int
 	blocks       []string // IDs this issue blocks
 	blockedBy    []string // IDs that block this issue
+	expanded     bool
 }
 
-func newDepGraphData(repos []*RepoSource, filterText string) depGraphData {
+func newDepGraphData(repos []*RepoSource, filterText string, statusFilter string) depGraphData {
 	multiRepo := len(repos) > 1
 	dg := depGraphData{}
 
@@ -47,6 +48,10 @@ func newDepGraphData(repos []*RepoSource, filterText string) depGraphData {
 			}
 			seen[iss.ID] = true
 
+			if statusFilter != "" && iss.Status != statusFilter {
+				continue
+			}
+
 			name := ""
 			if multiRepo {
 				name = r.Name
@@ -67,6 +72,7 @@ func newDepGraphData(repos []*RepoSource, filterText string) depGraphData {
 				openBlockers: openBlockers,
 				blocks:       iss.Blocks,
 				blockedBy:    iss.BlockedBy,
+				expanded:     true,
 			})
 		}
 	}
@@ -85,6 +91,34 @@ func newDepGraphData(repos []*RepoSource, filterText string) depGraphData {
 	})
 
 	dg.nodes = nodes
+
+	// Build ID → index lookup for edge rendering and auto-collapse
+	idIdx := make(map[string]int)
+	for i, n := range dg.nodes {
+		idIdx[n.issue.ID] = i
+	}
+
+	// Auto-collapse nodes whose blocked issues are all closed
+	for i := range dg.nodes {
+		if len(dg.nodes[i].blocks) > 0 {
+			allClosed := true
+			for _, blockedID := range dg.nodes[i].blocks {
+				if idx, exists := idIdx[blockedID]; exists {
+					if dg.nodes[idx].issue.Status != "closed" {
+						allClosed = false
+						break
+					}
+				} else {
+					// Target not in node list (filtered out) — keep expanded
+					allClosed = false
+					break
+				}
+			}
+			if allClosed {
+				dg.nodes[i].expanded = false
+			}
+		}
+	}
 
 	// Build set of IDs that appear as edge targets (blocked by another node).
 	// These should not appear as top-level rows since they're already shown
@@ -117,6 +151,57 @@ func (dg *depGraphData) moveDown() {
 	}
 }
 
+func (dg *depGraphData) pageUp(n int) {
+	if n < 1 {
+		n = 1
+	}
+	dg.cursor -= n
+	if dg.cursor < 0 {
+		dg.cursor = 0
+	}
+}
+
+func (dg *depGraphData) pageDown(n int) {
+	if n < 1 {
+		n = 1
+	}
+	dg.cursor += n
+	if dg.cursor >= len(dg.flat) {
+		if len(dg.flat) > 0 {
+			dg.cursor = len(dg.flat) - 1
+		} else {
+			dg.cursor = 0
+		}
+	}
+}
+
+func (dg *depGraphData) toggleExpand() {
+	if dg.cursor < len(dg.flat) {
+		idx := dg.flat[dg.cursor]
+		if len(dg.nodes[idx].blocks) > 0 {
+			dg.nodes[idx].expanded = !dg.nodes[idx].expanded
+		}
+	}
+}
+
+func (dg *depGraphData) expand() {
+	if dg.cursor < len(dg.flat) {
+		idx := dg.flat[dg.cursor]
+		if len(dg.nodes[idx].blocks) > 0 {
+			dg.nodes[idx].expanded = true
+		}
+	}
+}
+
+func (dg *depGraphData) collapse() {
+	if dg.cursor < len(dg.flat) {
+		idx := dg.flat[dg.cursor]
+		if len(dg.nodes[idx].blocks) > 0 {
+			dg.nodes[idx].expanded = false
+		}
+	}
+}
+
 func (dg *depGraphData) selectedIssue() *issue.Issue {
 	if dg.cursor < len(dg.flat) {
 		return dg.nodes[dg.flat[dg.cursor]].issue
@@ -124,7 +209,7 @@ func (dg *depGraphData) selectedIssue() *issue.Issue {
 	return nil
 }
 
-func renderDepGraph(dg *depGraphData, width, height int) string {
+func renderDepGraph(dg *depGraphData, width, height int, statusFilter string) string {
 	if len(dg.nodes) == 0 {
 		return lipgloss.NewStyle().Padding(2, 4).
 			Foreground(lipgloss.Color("#555555")).
@@ -132,7 +217,13 @@ func renderDepGraph(dg *depGraphData, width, height int) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Dependency Graph"))
+	title := "Dependency Graph"
+	if statusFilter != "" {
+		title += " [" + statusFilter + "]"
+	} else {
+		title += " [all]"
+	}
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(title))
 	b.WriteString("\n\n")
 
 	// Build ID → node index for edge rendering
@@ -163,8 +254,8 @@ func renderDepGraph(dg *depGraphData, width, height int) string {
 		b.WriteString(line)
 		b.WriteString("\n")
 
-		// Draw edges to blocked issues
-		if len(node.blocks) > 0 {
+		// Draw edges to blocked issues (only when expanded)
+		if node.expanded && len(node.blocks) > 0 {
 			for j, blockedID := range node.blocks {
 				isLast := j == len(node.blocks)-1
 				connector := "├─▶"
@@ -197,6 +288,15 @@ func renderDepLine(node depNode, selected bool) string {
 	iss := node.issue
 	blocked := node.openBlockers > 0 && iss.Status != "closed"
 
+	expandIcon := " "
+	if len(node.blocks) > 0 {
+		if node.expanded {
+			expandIcon = "▼"
+		} else {
+			expandIcon = "▶"
+		}
+	}
+
 	icon := styledStatusIcon(iss.Status, blocked)
 	id := styledID(iss.ID)
 	badge := styledPriorityBadge(iss.Priority)
@@ -210,7 +310,7 @@ func renderDepLine(node depNode, selected bool) string {
 		}
 	}
 
-	line := fmt.Sprintf("%s %s %s %s%s", icon, id, badge, iss.Title, depInfo)
+	line := fmt.Sprintf("%s %s %s %s %s%s", expandIcon, icon, id, badge, iss.Title, depInfo)
 
 	if selected {
 		return lipgloss.NewStyle().
